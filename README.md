@@ -45,7 +45,7 @@ example.org
 2. Run:
 
 ```bash
-cd recon
+cd subdomain_recon
 chmod +x bin/recon scripts/*.sh
 ./bin/recon
 ```
