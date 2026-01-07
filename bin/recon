@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+DOMAINS_FILE="$ROOT_DIR/input/domains.txt"
+RUNS_DIR="$ROOT_DIR/runs"
+RESUME_DIR=""
+
+log() { printf "[%s] %s\n" "$(date +"%H:%M:%S")" "$*"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Optional: load .env from recon/.env
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/.env"
+  set +a
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--domains) DOMAINS_FILE="$2"; shift 2;;
+    --resume) RESUME_DIR="$2"; shift 2;;
+    -h|--help)
+      cat <<EOF
+Usage:
+  ./bin/recon [--domains input/domains.txt] [--resume runs/<run_id>]
+
+Reads optional config from: recon/.env
+
+Env overrides:
+  SUBFINDER_FLAGS, DNS_THREADS, DNS_RETRY, DNS_RL, HTTP_THREADS, HTTP_RL, HTTP_TIMEOUT,
+  WILDCARD_SAMPLES, RESOLVERS_FILE
+EOF
+      exit 0
+      ;;
+    *) die "Unknown arg: $1";;
+  esac
+done
+
+[[ -f "$DOMAINS_FILE" ]] || die "Domains file not found: $DOMAINS_FILE"
+
+mkdir -p "$RUNS_DIR"
+
+if [[ -n "$RESUME_DIR" ]]; then
+  OUTDIR="$ROOT_DIR/$RESUME_DIR"
+  [[ -d "$OUTDIR" ]] || die "Resume dir not found: $OUTDIR"
+  log "Resuming run: $OUTDIR"
+else
+  RUN_ID="$(date +"%Y-%m-%d_%H%M%S")"
+  OUTDIR="$RUNS_DIR/$RUN_ID"
+  mkdir -p "$OUTDIR"
+  log "Starting new run: $OUTDIR"
+fi
+
+ln -sfn "$OUTDIR" "$ROOT_DIR/output"
+
+# Snapshot config
+{
+  echo "DOMAINS_FILE=$DOMAINS_FILE"
+  echo "SUBFINDER_FLAGS=${SUBFINDER_FLAGS:-}"
+  echo "DNS_THREADS=${DNS_THREADS:-}"
+  echo "DNS_RETRY=${DNS_RETRY:-}"
+  echo "DNS_RL=${DNS_RL:-}"
+  echo "HTTP_THREADS=${HTTP_THREADS:-}"
+  echo "HTTP_RL=${HTTP_RL:-}"
+  echo "HTTP_TIMEOUT=${HTTP_TIMEOUT:-}"
+  echo "WILDCARD_SAMPLES=${WILDCARD_SAMPLES:-}"
+  echo "RESOLVERS_FILE=${RESOLVERS_FILE:-}"
+} > "$OUTDIR/run.env"
+
+cp -f "$DOMAINS_FILE" "$OUTDIR/domains.txt"
+
+LOGFILE="$OUTDIR/run.log"
+exec > >(tee -a "$LOGFILE") 2>&1
+
+log "0) Bootstrap"
+bash "$ROOT_DIR/scripts/00_bootstrap.sh"
+
+log "1) Subdomain enumeration"
+bash "$ROOT_DIR/scripts/01_subenum.sh" "$OUTDIR/domains.txt" "$OUTDIR"
+
+
+log "Done."
+log "Final targets: $OUTDIR/final.urls.txt"
+log "Review queue:  $OUTDIR/review.wildcards.txt"
+log "Assets TSV:    $OUTDIR/all.assets.tsv"
