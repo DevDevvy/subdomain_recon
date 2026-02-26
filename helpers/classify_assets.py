@@ -1,28 +1,54 @@
 #!/usr/bin/env python3
+"""Classify assets with wildcard detection and tagging."""
 import argparse
 import json
 import sys
 from collections import defaultdict, Counter
 from typing import Dict, Set, Tuple, Optional
+from pathlib import Path
 
 def iter_jsonl(path: str):
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    """Safely iterate over JSONL file."""
+    if not Path(path).exists():
+        print(f"[!] Warning: {path} not found, skipping", file=sys.stderr)
+        return
+    
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line_no, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError as e:
+                    print(f"[!] JSON decode error in {path}:{line_no}: {e}", file=sys.stderr)
+                    continue
+    except IOError as e:
+        print(f"[!] Error reading {path}: {e}", file=sys.stderr)
+        return
 
 def read_domains(path: str):
+    """Read and normalize domain list."""
+    if not Path(path).exists():
+        print(f"[!] Error: domains file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    
     out = []
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip().lower().rstrip(".")
-            if line:
-                out.append(line)
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip().lower().rstrip(".")
+                if line:
+                    out.append(line)
+    except IOError as e:
+        print(f"[!] Error reading domains file: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    if not out:
+        print(f"[!] Error: no domains found in {path}", file=sys.stderr)
+        sys.exit(1)
+    
     # longest first for suffix matching
     out.sort(key=len, reverse=True)
     return out

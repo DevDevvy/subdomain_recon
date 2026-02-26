@@ -22,16 +22,84 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -d|--domains) DOMAINS_FILE="$2"; shift 2;;
     --resume) RESUME_DIR="$2"; shift 2;;
+    --enable-all) 
+      ENABLE_ADDITIONAL_SOURCES=true
+      ENABLE_PORT_SCAN=true
+      ENABLE_TECH_DETECT=true
+      ENABLE_VULN_SCAN=true
+      shift
+      ;;
     -h|--help)
       cat <<EOF
+╔══════════════════════════════════════════════════════════════════════════╗
+║                    RECON - Bug Bounty Subdomain Pipeline                 ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
 Usage:
-  ./bin/recon [--domains input/domains.txt] [--resume runs/<run_id>]
+  ./bin/recon [options]
 
-Reads optional config from: recon/.env
+Options:
+  -d, --domains FILE      Path to domains file (default: input/domains.txt)
+  --resume DIR            Resume from previous run directory
+  --enable-all            Enable all optional features (port scan, tech detection, vuln scan)
+  -h, --help              Show this help message
 
-Env overrides:
-  SUBFINDER_FLAGS, DNS_THREADS, DNS_RETRY, DNS_RL, HTTP_THREADS, HTTP_RL, HTTP_TIMEOUT,
-  WILDCARD_SAMPLES, RESOLVERS_FILE
+Configuration:
+  Edit .env file to customize:
+    - DNS/HTTP concurrency and rate limits
+    - Enable/disable individual features:
+      ENABLE_ADDITIONAL_SOURCES=true   # Use amass, assetfinder, crt.sh, etc.
+      ENABLE_PORT_SCAN=true             # Run naabu/nmap port scanning
+      ENABLE_TECH_DETECT=true           # Technology detection & screenshots
+      ENABLE_VULN_SCAN=true             # Run nuclei vulnerability scanner
+      ENABLE_SCREENSHOTS=true           # Capture screenshots with gowitness
+      ENABLE_NMAP=true                  # Run nmap service detection
+      ENABLE_NIKTO=true                 # Run nikto web scanner
+
+Core Workflow:
+  1. Subdomain enumeration (subfinder + optional sources)
+  2. DNS resolution (A + AAAA records)
+  3. Wildcard detection (DNS + HTTP fingerprinting)
+  4. HTTP probing (metadata + simhash)
+  5. Asset classification (final targets + review queue)
+  
+Optional Phases (enable in .env):
+  6. Port scanning (naabu/nmap)
+  7. Technology detection (httpx, wappalyzer, wayback)
+  8. Vulnerability scanning (nuclei, subjack, security headers)
+
+Output:
+  runs/<timestamp>/              Full run data
+  output/                        Symlink to latest run
+    ├── final.urls.txt          High-confidence targets (main output)
+    ├── review.wildcards.txt    Wildcard candidates for manual review
+    ├── all.assets.tsv          Full asset inventory with tags
+    ├── open.ports.txt          Discovered open ports
+    ├── vulns/                  Vulnerability scan results
+    ├── stats.json              Run statistics and metrics
+    └── run.log                 Complete execution log
+
+Examples:
+  # Basic run with default settings
+  ./bin/recon
+
+  # Enable all features for comprehensive recon
+  ./bin/recon --enable-all
+
+  # Custom domains file
+  ./bin/recon --domains /path/to/targets.txt
+
+  # Resume previous run
+  ./bin/recon --resume runs/2026-01-29_164718
+
+Utilities:
+  # Compare two runs
+  python3 helpers/diff_runs.py --old runs/run1 --new runs/run2 -v
+
+  # Generate statistics
+  python3 helpers/generate_stats.py --outdir output/
+
+For more information, see README.md
 EOF
       exit 0
       ;;
@@ -81,8 +149,69 @@ bash "$ROOT_DIR/scripts/00_bootstrap.sh"
 log "1) Subdomain enumeration"
 bash "$ROOT_DIR/scripts/01_subenum.sh" "$OUTDIR/domains.txt" "$OUTDIR"
 
+# Optional: Additional subdomain sources
+if [[ "${ENABLE_ADDITIONAL_SOURCES:-false}" == "true" ]]; then
+  log "1b) Additional subdomain sources"
+  bash "$ROOT_DIR/scripts/05_additional_sources.sh" "$OUTDIR/domains.txt" "$OUTDIR"
+  
+  # Re-resolve new subdomains
+  log "1c) Re-resolving with enhanced subdomain list"
+  bash "$ROOT_DIR/scripts/01_subenum.sh" "$OUTDIR/domains.txt" "$OUTDIR"
+fi
+
+# Optional: Port scanning
+if [[ "${ENABLE_PORT_SCAN:-false}" == "true" ]]; then
+  log "2) Port scanning"
+  bash "$ROOT_DIR/scripts/02_portscan.sh" "$OUTDIR"
+fi
+
+# Optional: Technology detection
+if [[ "${ENABLE_TECH_DETECT:-false}" == "true" ]]; then
+  log "3) Technology detection"
+  bash "$ROOT_DIR/scripts/03_techdetect.sh" "$OUTDIR"
+fi
+
+# Optional: Vulnerability scanning
+if [[ "${ENABLE_VULN_SCAN:-false}" == "true" ]]; then
+  log "4) Vulnerability scanning"
+  bash "$ROOT_DIR/scripts/04_vulnscan.sh" "$OUTDIR"
+fi
+
+# Generate statistics
+log "Generating statistics"
+python3 "$ROOT_DIR/helpers/generate_stats.py" --outdir "$OUTDIR" || true
+
+# Generate HTML report
+if [[ "${ENABLE_HTML_REPORT:-true}" == "true" ]]; then
+  log "Generating HTML report"
+  python3 "$ROOT_DIR/helpers/generate_report.py" --outdir "$OUTDIR" || true
+fi
 
 log "Done."
-log "Final targets: $OUTDIR/final.urls.txt"
-log "Review queue:  $OUTDIR/review.wildcards.txt"
-log "Assets TSV:    $OUTDIR/all.assets.tsv"
+log ""
+log "╔══════════════════════════════════════════════════════════════╗"
+log "║                   RECON COMPLETE                             ║"
+log "╚══════════════════════════════════════════════════════════════╝"
+log ""
+log "📁 Output directory: $OUTDIR"
+log ""
+log "Core Results:"
+log "  • Final targets:    $OUTDIR/final.urls.txt"
+log "  • Wildcard review:  $OUTDIR/review.wildcards.txt"
+log "  • All assets (TSV): $OUTDIR/all.assets.tsv"
+log "  • Run log:          $OUTDIR/run.log"
+log ""
+if [[ -f "$OUTDIR/open.ports.txt" ]]; then
+  log "Port Scanning:"
+  log "  • Open ports:       $OUTDIR/open.ports.txt"
+  log ""
+fi
+if [[ -f "$OUTDIR/vulns/nuclei.jsonl" ]]; then
+  log "Vulnerabilities:"
+  log "  • Nuclei findings:  $OUTDIR/vulns/nuclei.jsonl"
+  log "  • Summary report:   $OUTDIR/vulns/nuclei.stats.txt"
+  log ""
+fi
+log "Statistics & Reports:"
+log "  • Stats JSON:       $OUTDIR/stats.json"
+log ""
